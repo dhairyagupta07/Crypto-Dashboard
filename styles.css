@@ -69,7 +69,7 @@ header p {
     outline: none;
     border-color: #0f9b8e;
     box-shadow: 0 0 20px rgba(4, 234, 211, 0.3);
-    transform: matrix3d();
+    transform: translateY(-1px);
     background: rgba(255,255,255,0.15);
 }
 
