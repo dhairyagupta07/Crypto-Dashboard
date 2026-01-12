@@ -11,7 +11,6 @@ const CONFIG = {
   CURRENCY_SYMBOLS: {
       usd: '$',
       inr: '₹',
-      eur: '€'
   },
   SEARCH_DEBOUNCE: 500 
 };
