@@ -6,15 +6,15 @@
 const CONFIG = {
   API_BASE: 'https://api.coingecko.com/api/v3',
   API_KEY: 'CG-J1zx1JGKCUGFAaUQW7UHDoG9', // CoinGecko API Key
-  REFRESH_INTERVAL: 30000, // 30 seconds
-  CHART_DAYS: 7, // 7 days of price history
+  REFRESH_INTERVAL: 60000, // INCREASED to 60 seconds to avoid rate limits
+  CHART_DAYS: 7, 
   DEFAULT_COINS: ['bitcoin', 'ethereum', 'cardano', 'polkadot', 'chainlink', 'litecoin'],
   CURRENCY_SYMBOLS: {
       usd: '$',
       inr: '₹',
-      eur: 'â‚¬'
+      eur: '€'
   },
-  SEARCH_DEBOUNCE: 500 // milliseconds
+  SEARCH_DEBOUNCE: 500 
 };
 
 // Global state management
@@ -48,17 +48,28 @@ function getApiHeaders() {
   };
 }
 
+// Added delay helper to prevent rate limiting
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function makeApiRequest(url) {
-  const response = await fetch(url, {
-      method: 'GET',
-      headers: getApiHeaders()
-  });
-  
-  if (!response.ok) {
-      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+  try {
+      const response = await fetch(url, {
+          method: 'GET',
+          headers: getApiHeaders()
+      });
+      
+      if (response.status === 429) {
+          throw new Error('Rate limit exceeded');
+      }
+
+      if (!response.ok) {
+          throw new Error(`API request failed: ${response.status}`);
+      }
+      
+      return response.json();
+  } catch (error) {
+      throw error;
   }
-  
-  return response.json();
 }
 
 // ============================================
@@ -81,13 +92,8 @@ function initializeDOM() {
 }
 
 function setupEventListeners() {
-  // Search functionality with debouncing
   DOM.searchInput.addEventListener('input', handleSearchDebounced);
-  
-  // Currency change
   DOM.currencySelector.addEventListener('change', handleCurrencyChange);
-  
-  // Cleanup on page unload
   window.addEventListener('beforeunload', cleanup);
 }
 
@@ -99,7 +105,6 @@ function handleSearchDebounced() {
   if (AppState.searchTimeout) {
       clearTimeout(AppState.searchTimeout);
   }
-  
   AppState.searchTimeout = setTimeout(handleSearch, CONFIG.SEARCH_DEBOUNCE);
 }
 
@@ -112,9 +117,7 @@ async function handleSearch() {
       return;
   }
 
-  if (query.length < 2) {
-      return; // Wait for at least 2 characters
-  }
+  if (query.length < 2) return;
 
   try {
       showSearchingState();
@@ -123,7 +126,6 @@ async function handleSearch() {
       const data = await makeApiRequest(url);
       
       if (data.coins && data.coins.length > 0) {
-          // Get top 6 matching coins
           AppState.currentCoins = data.coins.slice(0, 6).map(coin => coin.id);
           await loadCryptocurrencies();
       } else {
@@ -131,7 +133,7 @@ async function handleSearch() {
       }
   } catch (error) {
       console.error('Search error:', error);
-      showError('Error searching cryptocurrencies. Please try again.');
+      showError('Error searching cryptocurrencies. API might be busy.');
   }
 }
 
@@ -147,7 +149,6 @@ function showSearchingState() {
 
 async function handleCurrencyChange() {
   const newCurrency = DOM.currencySelector.value;
-  
   if (newCurrency !== AppState.currentCurrency) {
       AppState.currentCurrency = newCurrency;
       await loadCryptocurrencies();
@@ -159,30 +160,29 @@ async function handleCurrencyChange() {
 // ============================================
 
 async function loadCryptocurrencies() {
-  if (AppState.isLoading) {
-      return; // Prevent multiple simultaneous requests
-  }
+  if (AppState.isLoading) return;
   
   AppState.isLoading = true;
   
   try {
       showLoading();
       
-      // Get market data and chart data in parallel
-      const [marketData, chartsData] = await Promise.all([
-          fetchMarketData(),
-          fetchChartsData()
-      ]);
+      // 1. Fetch Market Data First
+      const marketData = await fetchMarketData();
       
       if (marketData && marketData.length > 0) {
-          renderCryptoCards(marketData, chartsData);
+          // Render cards immediately so user sees something
+          renderCryptoCards(marketData, {});
+          
+          // 2. Then fetch charts one by one to avoid rate limits
+          await fetchChartsDataSequentially(marketData);
       } else {
           showError('No cryptocurrency data available.');
       }
       
   } catch (error) {
       console.error('Error loading cryptocurrencies:', error);
-      showError('Failed to load cryptocurrency data. Please check your connection and try again.');
+      showError('Failed to load data. Please wait a moment and try again.');
   } finally {
       AppState.isLoading = false;
   }
@@ -195,34 +195,26 @@ async function fetchMarketData() {
   return await makeApiRequest(url);
 }
 
-async function fetchChartsData() {
+// UPDATED: Fetches charts sequentially with delays
+async function fetchChartsDataSequentially(marketData) {
   const chartsData = {};
   
-  try {
-      const promises = AppState.currentCoins.map(async (coinId) => {
-          try {
-              const url = `${CONFIG.API_BASE}/coins/${coinId}/market_chart?vs_currency=${AppState.currentCurrency}&days=${CONFIG.CHART_DAYS}&interval=daily`;
-              const data = await makeApiRequest(url);
-              return { coinId, data };
-          } catch (error) {
-              console.warn(`Failed to load chart for ${coinId}:`, error);
-              return { coinId, data: null };
-          }
-      });
-      
-      const results = await Promise.all(promises);
-      
-      results.forEach(({ coinId, data }) => {
+  for (const coin of marketData) {
+      try {
+          // Add a small delay between requests to be kind to the API
+          await delay(300); // 300ms delay
+
+          const url = `${CONFIG.API_BASE}/coins/${coin.id}/market_chart?vs_currency=${AppState.currentCurrency}&days=${CONFIG.CHART_DAYS}&interval=daily`;
+          const data = await makeApiRequest(url);
+          
           if (data && data.prices) {
-              chartsData[coinId] = data.prices;
+              createChart(coin.id, data.prices);
           }
-      });
-      
-  } catch (error) {
-      console.warn('Error loading charts data:', error);
+      } catch (error) {
+          console.warn(`Failed to load chart for ${coin.id}:`, error);
+          createEmptyChart(coin.id);
+      }
   }
-  
-  return chartsData;
 }
 
 // ============================================
@@ -285,17 +277,6 @@ function renderCryptoCards(marketData, chartsData) {
   }).join('');
   
   DOM.cryptoGrid.innerHTML = cardsHTML;
-  
-  // Initialize charts after DOM is updated
-  requestAnimationFrame(() => {
-      marketData.forEach(coin => {
-          if (chartsData[coin.id]) {
-              createChart(coin.id, chartsData[coin.id]);
-          } else {
-              createEmptyChart(coin.id);
-          }
-      });
-  });
 }
 
 // ============================================
@@ -306,20 +287,16 @@ function createChart(coinId, priceData) {
   const canvas = document.getElementById(`chart-${coinId}`);
   if (!canvas) return;
   
-  // Destroy existing chart
   destroyChart(coinId);
   
   const ctx = canvas.getContext('2d');
   
-  // Process data
   const labels = priceData.map(point => {
       const date = new Date(point[0]);
       return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   });
   
   const prices = priceData.map(point => point[1]);
-  
-  // Determine trend color
   const isPositiveTrend = prices[prices.length - 1] >= prices[0];
   const trendColor = isPositiveTrend ? '#4ade80' : '#f87171';
   
@@ -352,7 +329,6 @@ function createChart(coinId, priceData) {
                   bodyColor: '#fff',
                   borderColor: trendColor,
                   borderWidth: 1,
-                  cornerRadius: 8,
                   displayColors: false,
                   callbacks: {
                       label: function(context) {
@@ -362,40 +338,15 @@ function createChart(coinId, priceData) {
               }
           },
           scales: {
-              x: {
-                  display: true,
-                  grid: {
-                      color: 'rgba(255, 255, 255, 0.1)',
-                      drawBorder: false
-                  },
-                  ticks: {
-                      color: 'rgba(255, 255, 255, 0.7)',
-                      maxTicksLimit: 4,
-                      font: { size: 11 }
-                  }
-              },
-              y: {
-                  display: true,
-                  grid: {
-                      color: 'rgba(255, 255, 255, 0.1)',
-                      drawBorder: false
-                  },
-                  ticks: {
-                      color: 'rgba(255, 255, 255, 0.7)',
-                      font: { size: 11 },
-                      callback: function(value) {
-                          return CONFIG.CURRENCY_SYMBOLS[AppState.currentCurrency] + formatPrice(value);
-                      }
-                  }
-              }
+              x: { display: false }, // Hiding X axis for cleaner look on small cards
+              y: { display: false }  // Hiding Y axis for cleaner look
           },
           interaction: {
               intersect: false,
               mode: 'index'
           },
           animation: {
-              duration: 1500,
-              easing: 'easeInOutQuart'
+              duration: 1000
           }
       }
   });
@@ -406,7 +357,6 @@ function createEmptyChart(coinId) {
   if (!canvas) return;
   
   destroyChart(coinId);
-  
   const ctx = canvas.getContext('2d');
   
   AppState.charts[coinId] = new Chart(ctx, {
@@ -416,7 +366,6 @@ function createEmptyChart(coinId) {
           datasets: [{
               data: [0],
               borderColor: 'rgba(255, 255, 255, 0.3)',
-              backgroundColor: 'rgba(255, 255, 255, 0.1)',
               borderWidth: 1
           }]
       },
@@ -424,10 +373,7 @@ function createEmptyChart(coinId) {
           responsive: true,
           maintainAspectRatio: false,
           plugins: { legend: { display: false } },
-          scales: {
-              x: { display: false },
-              y: { display: false }
-          }
+          scales: { x: { display: false }, y: { display: false } }
       }
   });
 }
@@ -444,27 +390,20 @@ function destroyChart(coinId) {
 // ============================================
 
 function startAutoRefresh() {
-  let seconds = 30;
-  
-  // Update countdown display
+  let seconds = CONFIG.REFRESH_INTERVAL / 1000;
   updateCountdown(seconds);
   
-  // Countdown timer
   AppState.countdownTimer = setInterval(() => {
       seconds--;
       updateCountdown(seconds);
-      
-      if (seconds <= 0) {
-          seconds = 30;
-      }
+      if (seconds <= 0) seconds = CONFIG.REFRESH_INTERVAL / 1000;
   }, 1000);
   
-  // Data refresh timer
   AppState.refreshTimer = setInterval(async () => {
       if (!AppState.isLoading) {
           await loadCryptocurrencies();
       }
-      seconds = 30;
+      seconds = CONFIG.REFRESH_INTERVAL / 1000;
       updateCountdown(seconds);
   }, CONFIG.REFRESH_INTERVAL);
 }
@@ -481,94 +420,47 @@ function updateCountdown(seconds) {
 
 function formatPrice(price) {
   if (!price && price !== 0) return '0.00';
-  
   if (price >= 1) {
-      return new Intl.NumberFormat('en-US', {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2
-      }).format(price);
+      return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(price);
   } else {
-      return new Intl.NumberFormat('en-US', {
-          minimumFractionDigits: 4,
-          maximumFractionDigits: 8
-      }).format(price);
+      return new Intl.NumberFormat('en-US', { minimumFractionDigits: 4, maximumFractionDigits: 8 }).format(price);
   }
 }
 
 function formatLargeNumber(num) {
   if (!num && num !== 0) return '0';
-  
-  if (num >= 1e12) {
-      return (num / 1e12).toFixed(2) + 'T';
-  } else if (num >= 1e9) {
-      return (num / 1e9).toFixed(2) + 'B';
-  } else if (num >= 1e6) {
-      return (num / 1e6).toFixed(2) + 'M';
-  } else if (num >= 1e3) {
-      return (num / 1e3).toFixed(2) + 'K';
-  }
+  if (num >= 1e12) return (num / 1e12).toFixed(2) + 'T';
+  if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+  if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+  if (num >= 1e3) return (num / 1e3).toFixed(2) + 'K';
   return formatPrice(num);
 }
 
-// ============================================
-// UI STATE MANAGEMENT
-// ============================================
-
 function showLoading(message = 'Loading cryptocurrency data...') {
-  DOM.cryptoGrid.innerHTML = `
-      <div class="loading">
-          <div class="loading-spinner"></div>
-          <p>${message}</p>
-      </div>
-  `;
+  // Only overwrite grid if it's empty to prevent flashing during refresh
+  if (DOM.cryptoGrid.children.length === 0) {
+      DOM.cryptoGrid.innerHTML = `
+          <div class="loading">
+              <div class="loading-spinner"></div>
+              <p>${message}</p>
+          </div>
+      `;
+  }
 }
 
 function showError(message) {
   DOM.cryptoGrid.innerHTML = `
       <div class="error">
-          <h3>âš ï¸ Error</h3>
+          <h3>⚠️ Error</h3>
           <p>${message}</p>
-          <button onclick="loadCryptocurrencies()" style="
-              margin-top: 15px; 
-              padding: 10px 20px; 
-              background: rgba(15,155,142,0.2); 
-              border: 1px solid #0f9b8e; 
-              border-radius: 8px; 
-              color: white; 
-              cursor: pointer;
-              transition: all 0.3s ease;
-          " onmouseover="this.style.background='rgba(15,155,142,0.3)'" onmouseout="this.style.background='rgba(15,155,142,0.2)'">
-              Try Again
-          </button>
+          <button onclick="loadCryptocurrencies()">Try Again</button>
       </div>
   `;
 }
 
-// ============================================
-// CLEANUP
-// ============================================
-
 function cleanup() {
-  // Clear all timers
-  if (AppState.refreshTimer) {
-      clearInterval(AppState.refreshTimer);
-      AppState.refreshTimer = null;
-  }
-  
-  if (AppState.countdownTimer) {
-      clearInterval(AppState.countdownTimer);
-      AppState.countdownTimer = null;
-  }
-  
-  if (AppState.searchTimeout) {
-      clearTimeout(AppState.searchTimeout);
-      AppState.searchTimeout = null;
-  }
-  
-  // Destroy all charts
-  Object.keys(AppState.charts).forEach(coinId => {
-      destroyChart(coinId);
-  });
-  
-  console.log('Crypto Dashboard cleaned up successfully');
+  if (AppState.refreshTimer) clearInterval(AppState.refreshTimer);
+  if (AppState.countdownTimer) clearInterval(AppState.countdownTimer);
+  if (AppState.searchTimeout) clearTimeout(AppState.searchTimeout);
+  Object.keys(AppState.charts).forEach(coinId => destroyChart(coinId));
 }
