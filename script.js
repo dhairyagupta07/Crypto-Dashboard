@@ -6,8 +6,7 @@
 const CONFIG = {
   API_BASE: 'https://api.coingecko.com/api/v3',
   API_KEY: 'CG-J1zx1JGKCUGFAaUQW7UHDoG9', // CoinGecko API Key
-  REFRESH_INTERVAL: 60000, // INCREASED to 60 seconds to avoid rate limits
-  CHART_DAYS: 7, 
+  REFRESH_INTERVAL: 60000, 
   DEFAULT_COINS: ['bitcoin', 'ethereum', 'cardano', 'polkadot', 'chainlink', 'litecoin'],
   CURRENCY_SYMBOLS: {
       usd: '$',
@@ -48,7 +47,7 @@ function getApiHeaders() {
   };
 }
 
-// Added delay helper to prevent rate limiting
+// Delay helper to prevent rate limiting
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function makeApiRequest(url) {
